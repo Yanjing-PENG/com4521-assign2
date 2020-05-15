@@ -23,7 +23,8 @@ int D = 0;
 MODE mode;
 int I = 0;
 char *input_file = NULL;
-nbody *nbodies = NULL;
+//nbody *nbodies = NULL;
+nbody_soa *nbodies = NULL;
 float *fx = NULL, *fy = NULL, *ax = NULL, *ay = NULL, *num = NULL;
 
 int main(int argc, char *argv[]) {
@@ -115,7 +116,15 @@ int main(int argc, char *argv[]) {
 
 	//TODO: Allocate any heap memory
 
-	nbodies = (struct nbody*)malloc(sizeof(struct nbody) * N);
+	//nbodies = (struct nbody*)malloc(sizeof(struct nbody) * N);
+
+	nbodies = (struct nbody_soa*)malloc(sizeof(struct nbody_soa));
+	nbodies->x = (float*)malloc(sizeof(float) * N);
+	nbodies->y = (float*)malloc(sizeof(float) * N);
+	nbodies->vx = (float*)malloc(sizeof(float) * N);
+	nbodies->vy = (float*)malloc(sizeof(float) * N);
+	nbodies->m = (float*)malloc(sizeof(float) * N);
+
 	fx = (float*)malloc(sizeof(float) * N);
 	fy = (float*)malloc(sizeof(float) * N);
 	ax = (float*)malloc(sizeof(float) * N);
@@ -151,7 +160,7 @@ int main(int argc, char *argv[]) {
 				continue;
 			}
 
-			if (j <= N) {
+			if (j <= N-1) {
 				//split the line by comma
 				int i = 0;	
 				char *ch1 = line;
@@ -167,28 +176,28 @@ int main(int argc, char *argv[]) {
 						switch (i++)
 						{
 						case 0:
-							nbodies[j].x = (float)atof(result);
-							if (nbodies[j].x <= EPSILON) nbodies[j].x = (float)(rand()*1.0 / RAND_MAX);
+							nbodies->x[j] = (float)atof(result);
+							if (nbodies->x[j] <= EPSILON) nbodies->x[j] = (float)(rand()*1.0 / RAND_MAX);
 							//printf("x: %f\n", nbodies[j].x);
 							break;
 						case 1:
-							nbodies[j].y = (float)atof(result);
-							if (nbodies[j].y <= EPSILON) nbodies[j].y = (float)(rand()*1.0 / RAND_MAX);
+							nbodies->y[j] = (float)atof(result);
+							if (nbodies->y[j] <= EPSILON) nbodies->y[j] = (float)(rand()*1.0 / RAND_MAX);
 							//printf("y: %f\n", nbodies[j].y);
 							break;
 						case 2:
-							nbodies[j].vx = (float)atof(result);
-							if (nbodies[j].vx <= EPSILON) nbodies[j].vx = 0.0;
+							nbodies->vx[j] = (float)atof(result);
+							if (nbodies->vx[j] <= EPSILON) nbodies->vx[j] = 0.0;
 							//printf("vx: %f\n", nbodies[j].vx);
 							break;
 						case 3:
-							nbodies[j].vy = (float)atof(result);
-							if (nbodies[j].vy <= EPSILON) nbodies[j].vy = 0.0;
+							nbodies->vy[j] = (float)atof(result);
+							if (nbodies->vy[j] <= EPSILON) nbodies->vy[j] = 0.0;
 							//printf("vy: %f\n", nbodies[j].vy);
 							break;
 						case 4:
-							nbodies[j].m = (float)atof(result);
-							if (nbodies[j].m <= EPSILON) nbodies[j].m = (float)(1.0 / N);
+							nbodies->m[j] = (float)atof(result);
+							if (nbodies->m[j] <= EPSILON) nbodies->m[j] = (float)(1.0 / N);
 							//printf("m: %f\n", nbodies[j].m);
 							break;
 						}
@@ -202,19 +211,14 @@ int main(int argc, char *argv[]) {
 				if (i != 5) {
 					printf("Error: comma number should exactly be 4 in line %s\n", line);
 				}
- 
-				j++;
 			}
-			//the number of bodies in the input file is larger than N
-			else {
-				printf("Error: The number of nbodies is wrong, increase the value of N.\n\n");
-				exit(0);
-			}
+
+			j++; //add one to the body count
 		}
 
 		//the number of bodies in the input file is less tha N
-		if (j < N) {
-			printf("Error: The number of nbodies is wrong, decrease the value of N.\n\n");
+		if (j != N) {
+			printf("Error: The number of nbodies is wrong, change the value of N.\n\n");
 			exit(0);
 		}
 
@@ -223,11 +227,11 @@ int main(int argc, char *argv[]) {
 	// generate random data
 	else {
 		for (int i = 0; i < N; i++) {
-			nbodies[i].x = (float)(rand()*1.0 / RAND_MAX);
-			nbodies[i].y = (float)(rand()*1.0 / RAND_MAX);
-			nbodies[i].vx = 0.0;
-			nbodies[i].vy = 0.0;
-			nbodies[i].m = (float)(1.0 / N);
+			nbodies->x[i] = (float)(rand()*1.0 / RAND_MAX);
+			nbodies->y[i] = (float)(rand()*1.0 / RAND_MAX);
+			nbodies->vx[i] = 0.0;
+			nbodies->vy[i] = 0.0;
+			nbodies->m[i] = (float)(1.0 / N);
 		}
 	}
 
@@ -268,12 +272,17 @@ int main(int argc, char *argv[]) {
 	// visualisation mode 
 	else {
 		initViewer(N, D, mode, step);
-		setNBodyPositions(nbodies);
+		setNBodyPositions2f(nbodies->x, nbodies->y);
 		setActivityMapData(num);
 		startVisualisationLoop();
 	}
 
 	//free allocated memory
+	free(nbodies->x);
+	free(nbodies->y);
+	free(nbodies->vx);
+	free(nbodies->vy);
+	free(nbodies->m);
 	free(nbodies);
 	free(fx);
 	free(fy);
@@ -302,35 +311,35 @@ void step(void)
 		for (int i = 0; i < N; i++) {
 			for (int j = 0; j < N; j++) {
 				// calculate distance from body j to body i firstly  
-				float d_x = nbodies[j].x - nbodies[i].x;
-				float d_y = nbodies[j].y - nbodies[i].y;
+				float d_x = nbodies->x[j] - nbodies->x[i];
+				float d_y = nbodies->y[j] - nbodies->y[i];
 				float distance_ij_powed = d_x * d_x + d_y * d_y;
 
-				fx[i] += (float)(((double) nbodies[j].m * d_x) / pow((double)distance_ij_powed + softening_powed, 3 / 2));
-				fy[i] += (float)(((double)nbodies[j].m * d_y) / pow((double)distance_ij_powed + softening_powed, 3 / 2));
+				fx[i] += (float)(((double) nbodies->m[j] * d_x) / pow((double)distance_ij_powed + softening_powed, 3 / 2));
+				fy[i] += (float)(((double)nbodies->m[j] * d_y) / pow((double)distance_ij_powed + softening_powed, 3 / 2));
 				//printf("fx: %f, fy: %f\n", fx[i], fy[i]);
 			}
 
 			//multiply G and mass for body i's Force
-			fx[i] *= G * nbodies[i].m;
-			fy[i] *= G * nbodies[i].m;
+			fx[i] *= G * nbodies->m[i];
+			fy[i] *= G * nbodies->m[i];
 			//printf("fx: %f, fy: %f\n", fx[i], fy[i]);
 
 			//calculate acceleration for body i
-			ax[i] = fx[i] / nbodies[i].m;
-			ay[i] = fy[i] / nbodies[i].m;
+			ax[i] = fx[i] / nbodies->m[i];
+			ay[i] = fy[i] / nbodies->m[i];
 			//printf("ax: %f, ay: %f\n", ax[i], ay[i]);
 		}
 
 		//calculate motion for all bodies 
 		for (int i = 0; i < N; i++) {
-			nbodies[i].vx = nbodies[i].vx + dt * ax[i];
-			nbodies[i].vy = nbodies[i].vy + dt * ay[i];
+			nbodies->vx[i] = nbodies->vx[i] + dt * ax[i];
+			nbodies->vy[i] = nbodies->vy[i] + dt * ay[i];
 			//printf("vx: %f, vy: %f\n", nbodies[i].vx, nbodies[i].vy);
 
 			//calculate the location for body i
-			nbodies[i].x = nbodies[i].x + dt * nbodies[i].vx;
-			nbodies[i].y = nbodies[i].y + dt * nbodies[i].vy;
+			nbodies->x[i] = nbodies->x[i] + dt * nbodies->vx[i];
+			nbodies->y[i] = nbodies->y[i] + dt * nbodies->vy[i];
 			//printf("x: %f, y: %f\n", nbodies[i].x, nbodies[i].y);
 		}
 
@@ -338,8 +347,8 @@ void step(void)
 		//get the location of body i in the one dimensional array with D*D length
 		memset(num, 0, sizeof(float) * D * D);
 		for (int i = 0; i < N; i++) {
-			int row = (int) floor((double)nbodies[i].x * D);
-			int column = (int) floor((double)nbodies[i].y * D);
+			int row = (int) floor((double)nbodies->x[i] * D);
+			int column = (int) floor((double)nbodies->y[i] * D);
 
 			if (row >= D)	row = D - 1;
 			if (row <= 0)	row = 0;
@@ -363,33 +372,34 @@ void step(void)
 		for (i = 0; i < N; i++) {
 			for (j = 0; j < N; j++) {
 				// calculate distance from body j to body i firstly  
-				float d_x = nbodies[j].x - nbodies[i].x;
-				float d_y = nbodies[j].y - nbodies[i].y;
+				float d_x = nbodies->x[j] - nbodies->x[i];
+				float d_y = nbodies->y[j] - nbodies->y[i];
 				float distance_ij_powed = d_x * d_x + d_y * d_y;
 
-				fx[i] += (float)(((double)nbodies[j].m * d_x) / pow((double)distance_ij_powed + softening_powed, 3 / 2));
-				fy[i] += (float)(((double)nbodies[j].m * d_y) / pow((double)distance_ij_powed + softening_powed, 3 / 2));
+				fx[i] += (float)(((double)nbodies->m[j] * d_x) / pow((double)distance_ij_powed + softening_powed, 3 / 2));
+				fy[i] += (float)(((double)nbodies->m[j] * d_y) / pow((double)distance_ij_powed + softening_powed, 3 / 2));
 			}
 
 			//multiply G and mass for body i's Force
-			fx[i] *= G * nbodies[i].m;
-			fy[i] *= G * nbodies[i].m;
+			fx[i] *= G * nbodies->m[i];
+			fy[i] *= G * nbodies->m[i];
 
 			//calculate acceleration for body i
-			ax[i] = fx[i] / nbodies[i].m;
-			ay[i] = fy[i] / nbodies[i].m;
+			ax[i] = fx[i] / nbodies->m[i];
+			ay[i] = fy[i] / nbodies->m[i];
 		}
 		#pragma omp barrier
 
 		//calculate motion for all bodies 
 		#pragma omp parallel for default(none) shared(nbodies,N,ax,ay) private(i)
 		for (i = 0; i < N; i++) {
-			nbodies[i].vx = nbodies[i].vx + dt * ax[i];
-			nbodies[i].vy = nbodies[i].vy + dt * ay[i];
+			//calculate the velocity for body i
+			nbodies->vx[i] = nbodies->vx[i] + dt * ax[i];
+			nbodies->vy[i] = nbodies->vy[i] + dt * ay[i];
 
 			//calculate the location for body i
-			nbodies[i].x = nbodies[i].x + dt * nbodies[i].vx;
-			nbodies[i].y = nbodies[i].y + dt * nbodies[i].vy;
+			nbodies->x[i] = nbodies->x[i] + dt * nbodies->vx[i];
+			nbodies->y[i] = nbodies->y[i] + dt * nbodies->vy[i];
 		}
 		#pragma omp barrier
 
@@ -399,8 +409,8 @@ void step(void)
 
 		#pragma omp parallel for shared(nbodies,N,D,num) private(i)
 		for (i = 0; i < N; i++) {
-			int row = (int)floor((double)nbodies[i].x * D);
-			int column = (int)floor((double)nbodies[i].y * D);
+			int row = (int)floor((double)nbodies->x[i] * D);
+			int column = (int)floor((double)nbodies->y[i] * D);
 
 			if (row >= D || row <= 0)	continue;
 			if (column >= D || column <= 0)	continue;
