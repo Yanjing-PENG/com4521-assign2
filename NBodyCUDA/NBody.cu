@@ -7,6 +7,8 @@
 #include <time.h>
 #include <math.h>
 #include <omp.h>
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
 
 #include "NBody.h"
 #include "NBodyVisualiser.h"
@@ -315,11 +317,11 @@ int main(int argc, char *argv[]) {
 		else if (mode == CUDA) {
 
 			//copy memory from host to device
-			cudaMemcpy(d_x, x, size, cudaMemcpyHostToDevice);
-			cudaMemcpy(d_y, y, size, cudaMemcpyHostToDevice);
-			cudaMemcpy(d_vx, vx, size, cudaMemcpyHostToDevice);
-			cudaMemcpy(d_vy, vy, size, cudaMemcpyHostToDevice);
-			cudaMemcpy(d_m, m, size, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_x, nbodies->x, sizeof(float) * N, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_y, nbodies->y, sizeof(float) * N, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_vx, nbodies->vx, sizeof(float) * N, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_vy, nbodies->vy, sizeof(float) * N, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_m, nbodies->m, sizeof(float) * N, cudaMemcpyHostToDevice);
 
 			for (i = 0; i < I; i++) {
 				step();
@@ -507,9 +509,9 @@ void step(void)
 		int M = THREADS_PER_BLOCK;
 
 		//initialize d_fx, d_fy, d_num to be 0.0
-		cudaMemset(d_fx, 0, size);
-		cudaMemset(d_fy, 0, size);
-		cudaMemset(d_num, 0, size);
+		cudaMemset(d_fx, 0, sizeof(float) * N);
+		cudaMemset(d_fy, 0, sizeof(float) * N);
+		cudaMemset(d_num, 0, sizeof(float) * D * D);
 
 		//launch calculate_acceleration kernal in GPU
 		calculate_acceleration<<<(N + M -1)/M, M>>>(d_x, d_y, d_m, d_fx, d_fy, d_ax, d_ay, N, G, softening_powed);
