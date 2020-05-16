@@ -13,6 +13,53 @@
 
 #define USER_NAME "acp18aaf"		//replace with your username
 #define EPSILON 0.000001
+#define THREADS_PER_BLOCK 128
+
+//cuda kernal to calculate accelerations for all N bodies
+__global__ void calculate_acceleration(float* x, float* y, float* m, float* fx, float* fy, float* ax, float* ay, int n, float g, float softening_powed) {
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	int j;
+	float d_x, d_y, distance_ij_powed, denominator;
+	if (i < n) {
+		for (j = 0; j < n; j++) {
+			d_x = x[j] - x[i];
+			d_y = y[j] - x[i];
+			distance_ij_powed = d_x * d_x + d_y * d_y;
+			denominator = powf(distance_ij_powed + softening_powed, 1.5);
+			fx[i] += m[j] * d_x / denominator;
+			fy[i] += m[j] * d_y / denominator;
+		}
+
+		ax[i] = fx[i] * g;
+		ay[i] = fy[i] * g;
+	}
+}
+
+//cuda kernal to calculate positions for all N bodies
+__global__ void calculate_position(float* ax, float* ay, float* vx, float* vy, float* x, float* y, float t, int n) {
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	if (i < n) {
+		vx[i] = vx[i] + t * ax[i];
+		vy[i] = vy[i] + t * ay[i];
+
+		x[i] = x[i] + t * vx[i];
+		y[i] = y[i] + t * vy[i];
+	}
+}
+
+//cuda kernal to calculate activity map for all N bodies
+__global__ void calculate_activity(float* x, float* y, float* num, int n, int d) {
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	int row, column;
+	if (i < n) {
+		row = (int)floor((double)x[i] * d);
+		column = (int)floor((double)y[i] * d);
+
+		if (row >= 0 && row < d && column >= 0 && column < d) {
+			num[column + row * d] += (float)(1.0 * d / n);
+		}
+	}
+}
 
 void print_help();
 void step(void);
@@ -25,6 +72,10 @@ int I = 0;
 char *input_file = NULL;
 nbody_soa *nbodies = NULL;
 float *fx = NULL, *fy = NULL, *ax = NULL, *ay = NULL, *num = NULL;
+
+//define device pointers for CUDA mode 
+float *d_x = NULL, *d_y = NULL, *d_vx = NULL, *d_vy = NULL, *d_m = NULL;
+float *d_fx = NULL, *d_fy = NULL, *d_ax = NULL, *d_ay = NULL, *d_num = NULL;
 
 int main(int argc, char *argv[]) {
 
@@ -124,6 +175,21 @@ int main(int argc, char *argv[]) {
 	ax = (float*)malloc(sizeof(float) * N);
 	ay = (float*)malloc(sizeof(float) * N);
 	num = (float*)malloc(sizeof(float) * D * D);
+
+	//allocate GPU meomory for CUDA mode
+	if (mode == CUDA) {
+		cudaMalloc((void**) &d_x, sizeof(float) * N);
+		cudaMalloc((void**) &d_y, sizeof(float) * N);
+		cudaMalloc((void**) &d_vx, sizeof(float) * N);
+		cudaMalloc((void**) &d_vy, sizeof(float) * N);
+		cudaMalloc((void**) &d_m, sizeof(float) * N);
+
+		cudaMalloc((void**)&(d_fx), sizeof(float) * N);
+		cudaMalloc((void**)&(d_fy), sizeof(float) * N);
+		cudaMalloc((void**)&(d_ax), sizeof(float) * N);
+		cudaMalloc((void**)&(d_ay), sizeof(float) * N);
+		cudaMalloc((void**)&(d_num), sizeof(float) * D * D);
+	}
 	
 	//TODO: Depending on program arguments, either read initial data from file or generate random data.
 
@@ -247,6 +313,14 @@ int main(int argc, char *argv[]) {
 			}
 		}
 		else if (mode == CUDA) {
+
+			//copy memory from host to device
+			cudaMemcpy(d_x, x, size, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_y, y, size, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_vx, vx, size, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_vy, vy, size, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_m, m, size, cudaMemcpyHostToDevice);
+
 			for (i = 0; i < I; i++) {
 				step();
 			}
@@ -264,10 +338,20 @@ int main(int argc, char *argv[]) {
 	}
 	// visualisation mode 
 	else {
-		initViewer(N, D, mode, step);
-		setNBodyPositions2f(nbodies->x, nbodies->y);
-		setActivityMapData(num);
-		startVisualisationLoop();
+		if (mode == CPU || mode == OPENMP) {
+			initViewer(N, D, mode, step);
+			setNBodyPositions2f(nbodies->x, nbodies->y);
+			setActivityMapData(num);
+			startVisualisationLoop();
+		}
+		else if (mode == CUDA) {
+
+		}
+		else {
+			printf("Error: wrong mode.\n");
+			exit(0);
+		}
+		
 	}
 
 	//free allocated memory
@@ -282,6 +366,20 @@ int main(int argc, char *argv[]) {
 	free(ax);
 	free(ay);
 	free(num);
+
+	//free allocated device memory for CUDA mode
+	if (mode == CUDA){
+		cudaFree(d_x);
+		cudaFree(d_y);
+		cudaFree(d_vx);
+		cudaFree(d_vy);
+		cudaFree(d_m);
+		cudaFree(d_fx);
+		cudaFree(d_fy);
+		cudaFree(d_ax);
+		cudaFree(d_ay);
+		cudaFree(d_num);
+	}
 
 	return 0;
 }
@@ -405,9 +503,26 @@ void step(void)
 	}
 	//CUDA mode
 	else if (mode == CUDA) {
-	
-	}
 
+		int M = THREADS_PER_BLOCK;
+
+		//initialize d_fx, d_fy, d_num to be 0.0
+		cudaMemset(d_fx, 0, size);
+		cudaMemset(d_fy, 0, size);
+		cudaMemset(d_num, 0, size);
+
+		//launch calculate_acceleration kernal in GPU
+		calculate_acceleration<<<(N + M -1)/M, M>>>(d_x, d_y, d_m, d_fx, d_fy, d_ax, d_ay, N, G, softening_powed);
+		cudaDeviceSynchronize();
+
+		//launch calculate_position kernal in GPU
+		calculate_position<<<(N + M -1)/M, M>>>(d_ax, d_ay, d_vx, d_vy, d_x, d_y, dt, N);
+		cudaDeviceSynchronize();
+
+		//launch calculate_a kernal in GPU
+		calculate_activity<<<(N + M -1)/M, M>>>(d_x, d_y, d_num, N, D);
+		cudaDeviceSynchronize();
+	}
 	else {
 		printf("Error: wrong mode.\n");
 		exit(0);
