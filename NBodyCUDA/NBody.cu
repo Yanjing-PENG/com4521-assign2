@@ -417,9 +417,9 @@ void step(void)
 				float d_x = x[j] - x[i];
 				float d_y = y[j] - y[i];
 				float distance_ij_powed = d_x * d_x + d_y * d_y;
-				float denominator = pow((double)distance_ij_powed + softening_powed, 3.0 / 2));
-				fx[i] += (float)(((double)m[j] * d_x) / denominator;
-				fy[i] += (float)(((double)m[j] * d_y) / denominator;
+				float denominator = (float)pow((double)distance_ij_powed + softening_powed, 3.0 / 2);
+				fx[i] += (float)(((double)m[j] * d_x) / denominator);
+				fy[i] += (float)(((double)m[j] * d_y) / denominator);
 			}
 
 			//calculate acceleration for body i
@@ -462,10 +462,10 @@ void step(void)
 				float d_x = x[j] - x[i];
 				float d_y = y[j] - y[i];
 				float distance_ij_powed = d_x * d_x + d_y * d_y;
-				float denominator = pow((double)distance_ij_powed + softening_powed, 3.0 / 2))
+				float denominator = (float)pow((double)distance_ij_powed + softening_powed, 3.0 / 2);
 
-				fx[i] += (float)(((double)m[j] * d_x) / denominator;
-				fy[i] += (float)(((double)m[j] * d_y) / denominator;
+				fx[i] += (float)(((double)m[j] * d_x) / denominator);
+				fy[i] += (float)(((double)m[j] * d_y) / denominator);
 			}
 
 			//calculate acceleration for body i
