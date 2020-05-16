@@ -17,6 +17,52 @@
 #define EPSILON 0.000001
 #define THREADS_PER_BLOCK 128
 
+//cuda kernal to calculate accelerations for all N bodies
+__global__ void calculate_acceleration(float* x, float* y, float* m, float* fx, float* fy, float* ax, float* ay, int n, float g, float softening_powed) {
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	int j;
+	float d_x, d_y, distance_ij_powed, denominator;
+	if (i < n) {
+		for (j = 0; j < n; j++) {
+			d_x = x[j] - x[i];
+			d_y = y[j] - x[i];
+			distance_ij_powed = d_x * d_x + d_y * d_y;
+			denominator = powf(distance_ij_powed + softening_powed, 1.5);
+			fx[i] += m[j] * d_x / denominator;
+			fy[i] += m[j] * d_y / denominator;
+		}
+
+		ax[i] = fx[i] * g;
+		ay[i] = fy[i] * g;
+	}
+}
+
+//cuda kernal to calculate positions for all N bodies
+__global__ void calculate_position(float* ax, float* ay, float* vx, float* vy, float* x, float* y, float t, int n) {
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	if (i < n) {
+		vx[i] = vx[i] + t * ax[i];
+		vy[i] = vy[i] + t * ay[i];
+
+		x[i] = x[i] + t * vx[i];
+		y[i] = y[i] + t * vy[i];
+	}
+}
+
+//cuda kernal to calculate activity map for all N bodies
+__global__ void calculate_activity(float* x, float* y, float* num, int n, int d) {
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	int row, column;
+	if (i < n) {
+		row = (int)floor((double)x[i] * d);
+		column = (int)floor((double)y[i] * d);
+
+		if (row >= 0 && row < d && column >= 0 && column < d) {
+			num[column + row * d] += (float)(1.0 * d / n);
+		}
+	}
+}
+
 void print_help();
 void step(void);
 
@@ -27,60 +73,16 @@ MODE mode;
 int I = 0;
 char *input_file = NULL;
 
-nboday_soa Nbody;
-nbody_soa *nbodies = &Nbody;
+//arrays to store N-bodies's values
+float *x = NULL, *y = NULL, *vx = NULL, *vy = NULL, *m = NULL;
+
+//simulation and activity map
 float *fx = NULL, *fy = NULL, *ax = NULL, *ay = NULL, *num = NULL;
 int size = 0;
 
 //define device pointers for CUDA mode 
 float *d_x = NULL, *d_y = NULL, *d_vx = NULL, *d_vy = NULL, *d_m = NULL;
 float *d_fx = NULL, *d_fy = NULL, *d_ax = NULL, *d_ay = NULL, *d_num = NULL;
-
-//cuda kernal to calculate accelerations for all N bodies
-__global__ void calculate_acceleration(float* x, float* y, float *m, float *fx, float *fy, float *ax, float* ay, int n, float g, float softening_powed) {
-	int i = blockIdx.x * blockDim.x + threadIdx.x;
-	int j;
-	float d_x, d_y, distance_ij_powed, denominator;
-	if (i < n){
-		for (j = 0; j < n; j++){
-			d_x = x[j] - x[i];
-			d_y = y[j] - x[i];
-			distance_ij_powed = d_x * d_x + d_y * d_y;
-			denominator = powf(distance_ij_powed + softening_powed, 1.5);
-			fx[i] += m[j] * d_x / denominator;
-			fy[i] += m[j] * d_y / denominator;
-		}
-
-		ax[i] = fx[i] * g;
-		ay[i] = fy[i] * g; 
-	}
-}
-
-//cuda kernal to calculate positions for all N bodies
-__global__ void calculate_position(float *ax, float *ay, float *vx, float *vy, float *x, float *y, float t, int n) {
-	int i = blockIdx.x * blockDim.x + threadIdx.x;
-	if (i < n){
-		vx[i] = vx[i] + t * ax[i];
-		vy[i] = vy[i] + t * ay[i];
-
-		x[i] = x[i] + t * vx[i];
-		y[i] = y[i] + t * vy[i];
-	}
-}
-
-//cuda kernal to calculate activity map for all N bodies
-__global__ void calculate_activity(float *x, float *y, float *num, int n, int d) {
-	int i = blockIdx.x * blockDim.x + threadIdx.x;
-	int row, column;
-	if (i < n){
-		row = (int)floor((double)x[i] * d);
-		column = (int)floor((double)y[i] * d);
- 
-		if (row >= 0 && row < d && column >= 0 && column < d) {
-			num[column + row * d] += (float)(1.0*d / n);
-		}
-	}
-}
 
 int main(int argc, char *argv[]) {
 
@@ -172,11 +174,11 @@ int main(int argc, char *argv[]) {
 	//TODO: Allocate any heap memory
 
  	size = sizeof(float) * N;
-	nbodies->x = (float*)malloc(size);
-	nbodies->y = (float*)malloc(size);
-	nbodies->vx = (float*)malloc(size);
-	nbodies->vy = (float*)malloc(size);
-	nbodies->m = (float*)malloc(size);
+	x = (float*)malloc(size);
+	y = (float*)malloc(size);
+	vx = (float*)malloc(size);
+	vy = (float*)malloc(size);
+	m = (float*)malloc(size);
 
 	fx = (float*)malloc(size);
 	fy = (float*)malloc(size);
@@ -214,8 +216,8 @@ int main(int argc, char *argv[]) {
 		srand((unsigned)time(NULL));	//help to generate random variable
 
 		if (f == NULL) {
-			printf("Error: Could not open input file. \n\n");
-			exit(0);
+			fprintf(stderr, "Error: Could not open input file.\n");
+			exit(-1);
 		}
 		
 		//read the input file line by line
@@ -245,29 +247,24 @@ int main(int argc, char *argv[]) {
 						switch (i++)
 						{
 						case 0:
-							nbodies->x[j] = (float)atof(result);
-							if (nbodies->x[j] <= EPSILON) nbodies->x[j] = (float)(rand()*1.0 / RAND_MAX);
-							//printf("x: %f\n", nbodies[j].x);
+							x[j] = (float)atof(result);
+							if (x[j] <= EPSILON) x[j] = (float)(rand()*1.0 / RAND_MAX);
 							break;
 						case 1:
-							nbodies->y[j] = (float)atof(result);
-							if (nbodies->y[j] <= EPSILON) nbodies->y[j] = (float)(rand()*1.0 / RAND_MAX);
-							//printf("y: %f\n", nbodies[j].y);
+							y[j] = (float)atof(result);
+							if (y[j] <= EPSILON) y[j] = (float)(rand()*1.0 / RAND_MAX);
 							break;
 						case 2:
-							nbodies->vx[j] = (float)atof(result);
-							if (nbodies->vx[j] <= EPSILON) nbodies->vx[j] = 0.0;
-							//printf("vx: %f\n", nbodies[j].vx);
+							vx[j] = (float)atof(result);
+							if (vx[j] <= EPSILON) vx[j] = 0.0;
 							break;
 						case 3:
-							nbodies->vy[j] = (float)atof(result);
-							if (nbodies->vy[j] <= EPSILON) nbodies->vy[j] = 0.0;
-							//printf("vy: %f\n", nbodies[j].vy);
+							vy[j] = (float)atof(result);
+							if (vy[j] <= EPSILON) vy[j] = 0.0;
 							break;
 						case 4:
-							nbodies->m[j] = (float)atof(result);
-							if (nbodies->m[j] <= EPSILON) nbodies->m[j] = (float)(1.0 / N);
-							//printf("m: %f\n", nbodies[j].m);
+							m[j] = (float)atof(result);
+							if (m[j] <= EPSILON) m[j] = (float)(1.0 / N);
 							break;
 						}
 						//printf("result: %s\n", result);
@@ -278,7 +275,8 @@ int main(int argc, char *argv[]) {
 				} 
 
 				if (i != 5) {
-					printf("Error: comma number should exactly be 4 in line %s\n", line);
+					fprintf(stderr, "Error: comma number should exactly be 4 in line %s\n", line);
+					exit(-1);
 				}
 			}
 
@@ -287,8 +285,8 @@ int main(int argc, char *argv[]) {
 
 		//the number of bodies in the input file is less tha N
 		if (j != N) {
-			printf("Error: The number of nbodies is wrong, change the value of N.\n\n");
-			exit(0);
+			fprintf(stderr, "Error: The number of nbodies is wrong, change the value of N.\n");
+			exit(-1);
 		}
 
 		fclose(f);
@@ -296,11 +294,11 @@ int main(int argc, char *argv[]) {
 	// generate random data
 	else {
 		for (int i = 0; i < N; i++) {
-			nbodies->x[i] = (float)(rand()*1.0 / RAND_MAX);
-			nbodies->y[i] = (float)(rand()*1.0 / RAND_MAX);
-			nbodies->vx[i] = 0.0;
-			nbodies->vy[i] = 0.0;
-			nbodies->m[i] = (float)(1.0 / N);
+			x[i] = (float)(rand()*1.0 / RAND_MAX);
+			y[i] = (float)(rand()*1.0 / RAND_MAX);
+			vx[i] = 0.0;
+			vy[i] = 0.0;
+			m[i] = (float)(1.0 / N);
 		}
 	}
 
@@ -325,32 +323,37 @@ int main(int argc, char *argv[]) {
 		else if (mode == CUDA) {
 
 			//copy memory from host to device
-			cudaMemcpy(d_x, nbodies->x, size, cudaMemcpyHostToDevice);
-			cudaMemcpy(d_y, nbodies->y, size, cudaMemcpyHostToDevice);
-			cudaMemcpy(d_vx, nbodies->vx, size, cudaMemcpyHostToDevice);
-			cudaMemcpy(d_vy, nbodies->vy, size, cudaMemcpyHostToDevice);
-			cudaMemcpy(d_m, nbodies->m, size, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_x, x, size, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_y, y, size, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_vx, vx, size, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_vy, vy, size, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_m, m, size, cudaMemcpyHostToDevice);
 
 			for (i = 0; i < I; i++) {
 				step();
 			}
 		}
 		else {
-			printf("Error: wrong mode.\n");
-			exit(0);
+			fprintf(stderr, "Error: wrong mode.\n");
+			exit(-1);
 		}
 		clock_t end_time = clock(); //record the Iteration ending time
 
 		float run_time = (end_time - start_time) / (float) CLOCKS_PER_SEC;
 		int seconds = (int) floor(run_time);
 		int milliseconds = (int) ((run_time - seconds)*1000);
-		printf("Execution time %d seconds %d milliseconds\n", seconds, milliseconds);
+		fprintf(stdout, "Execution time %d seconds %d milliseconds\n", seconds, milliseconds);
 	}
 	// visualisation mode 
 	else {
 		//input device pointers in CUDA mode for visulization 
 		if (mode == CUDA){
 			//copy memory from host to device
+			cudaMemcpy(d_x, x, size, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_y, y, size, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_vx, vx, size, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_vy, vy, size, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_m, m, size, cudaMemcpyHostToDevice);
 
 			initViewer(N, D, mode, step);
 			setNBodyPositions2f(d_x, d_y);
@@ -358,18 +361,18 @@ int main(int argc, char *argv[]) {
 			startVisualisationLoop();
 		} else {
 			initViewer(N, D, mode, step);
-			setNBodyPositions2f(nbodies->x, nbodies->y);
+			setNBodyPositions2f(x, y);
 			setActivityMapData(num);
 			startVisualisationLoop();
 		}
 	}
 
 	//free allocated host memory
-	free(nbodies->x);
-	free(nbodies->y);
-	free(nbodies->vx);
-	free(nbodies->vy);
-	free(nbodies->m);
+	free(x);
+	free(y);
+	free(vx);
+	free(vy);
+	free(m);
 	free(fx);
 	free(fy);
 	free(ax);
@@ -396,7 +399,6 @@ int main(int argc, char *argv[]) {
 void step(void)
 {
 	//TODO: Perform the main simulation of the NBody system
-	int size = sizeof(float) * N;
 
 	//initialize fx, fy, num to be 0.0
 	memset(fx, 0, size);
@@ -412,66 +414,58 @@ void step(void)
 		for (int i = 0; i < N; i++) {
 			for (int j = 0; j < N; j++) {
 				// calculate distance from body j to body i firstly  
-				float d_x = nbodies->x[j] - nbodies->x[i];
-				float d_y = nbodies->y[j] - nbodies->y[i];
+				float d_x = x[j] - x[i];
+				float d_y = y[j] - y[i];
 				float distance_ij_powed = d_x * d_x + d_y * d_y;
-
-				fx[i] += (float)(((double) nbodies->m[j] * d_x) / pow((double)distance_ij_powed + softening_powed, 3 / 2));
-				fy[i] += (float)(((double)nbodies->m[j] * d_y) / pow((double)distance_ij_powed + softening_powed, 3 / 2));
-				//printf("fx: %f, fy: %f\n", fx[i], fy[i]);
+				float denominator = pow((double)distance_ij_powed + softening_powed, 3.0 / 2));
+				fx[i] += (float)(((double)m[j] * d_x) / denominator;
+				fy[i] += (float)(((double)m[j] * d_y) / denominator;
 			}
 
 			//calculate acceleration for body i
 			ax[i] = fx[i] * G;
 			ay[i] = fy[i] * G;
-			//printf("ax: %f, ay: %f\n", ax[i], ay[i]);
 		}
 
 		//calculate motion for all bodies 
 		for (int i = 0; i < N; i++) {
-			nbodies->vx[i] = nbodies->vx[i] + dt * ax[i];
-			nbodies->vy[i] = nbodies->vy[i] + dt * ay[i];
-			//printf("vx: %f, vy: %f\n", nbodies[i].vx, nbodies[i].vy);
+			vx[i] = vx[i] + dt * ax[i];
+			vy[i] = vy[i] + dt * ay[i];
 
 			//calculate the location for body i
-			nbodies->x[i] = nbodies->x[i] + dt * nbodies->vx[i];
-			nbodies->y[i] = nbodies->y[i] + dt * nbodies->vy[i];
-			//printf("x: %f, y: %f\n", nbodies[i].x, nbodies[i].y);
+			x[i] = x[i] + dt * vx[i];
+			y[i] = y[i] + dt * vy[i];
 		}
 
 		//calculate activity map
 		//get the location of body i in the one dimensional array with D*D length
+		//initialize the count array to 0
 		memset(num, 0, sizeof(float) * D * D);
+
 		for (int i = 0; i < N; i++) {
-			int row = (int) floor((double)nbodies->x[i] * D);
-			int column = (int) floor((double)nbodies->y[i] * D);
+			int row = (int) floor((double)x[i] * D);
+			int column = (int) floor((double)y[i] * D);
 
 			if (row >= 0 && row < D && column >= 0 && column < D) {
 				num[column + row * D] += (float) (1.0*D / N);
 			}
 		}
-		/*
-		for (int i = 0; i < D; i++) {
-			for (int j = 0; j < D; j++) {
-				printf("%f, ", num[i*D+j]);
-			}
-			printf("\n");
-		}*/
 	}
 	//OPENMP mode 
 	else if (mode == OPENMP) {
 		//calculate force and acceleration for all bodies
 		int i, j;
-		#pragma omp parallel for shared(nbodies,N,fx,fy,ax,ay)
+		#pragma omp parallel for shared(x,y,vx,vy,m,N,fx,fy,ax,ay)
 		for (i = 0; i < N; i++) {
 			for (j = 0; j < N; j++) {
 				// calculate distance from body j to body i firstly  
-				float d_x = nbodies->x[j] - nbodies->x[i];
-				float d_y = nbodies->y[j] - nbodies->y[i];
+				float d_x = x[j] - x[i];
+				float d_y = y[j] - y[i];
 				float distance_ij_powed = d_x * d_x + d_y * d_y;
+				float denominator = pow((double)distance_ij_powed + softening_powed, 3.0 / 2))
 
-				fx[i] += (float)(((double)nbodies->m[j] * d_x) / pow((double)distance_ij_powed + softening_powed, 3 / 2));
-				fy[i] += (float)(((double)nbodies->m[j] * d_y) / pow((double)distance_ij_powed + softening_powed, 3 / 2));
+				fx[i] += (float)(((double)m[j] * d_x) / denominator;
+				fy[i] += (float)(((double)m[j] * d_y) / denominator;
 			}
 
 			//calculate acceleration for body i
@@ -481,26 +475,27 @@ void step(void)
 		#pragma omp barrier
 
 		//calculate motion for all bodies 
-		#pragma omp parallel for default(none) shared(nbodies,N,ax,ay) private(i)
+		#pragma omp parallel for default(none) shared(vx,vy,x,y,N,ax,ay) private(i)
 		for (i = 0; i < N; i++) {
 			//calculate the velocity for body i
-			nbodies->vx[i] = nbodies->vx[i] + dt * ax[i];
-			nbodies->vy[i] = nbodies->vy[i] + dt * ay[i];
+			vx[i] = vx[i] + dt * ax[i];
+			vy[i] = vy[i] + dt * ay[i];
 
 			//calculate the location for body i
-			nbodies->x[i] = nbodies->x[i] + dt * nbodies->vx[i];
-			nbodies->y[i] = nbodies->y[i] + dt * nbodies->vy[i];
+			x[i] = x[i] + dt * vx[i];
+			y[i] = y[i] + dt * vy[i];
 		}
 		#pragma omp barrier
 
 		//calculate activity map
 		//get the location of body i in the one dimensional array with D*D length
+		//initialize the count array to 0
 		memset(num, 0, sizeof(float) * D * D);
 
-		#pragma omp parallel for shared(nbodies,N,D,num) private(i)
+		#pragma omp parallel for shared(x,y,N,D,num) private(i)
 		for (i = 0; i < N; i++) {
-			int row = (int)floor((double)nbodies->x[i] * D);
-			int column = (int)floor((double)nbodies->y[i] * D);
+			int row = (int)floor((double)x[i] * D);
+			int column = (int)floor((double)y[i] * D);
 
 			if (row >= D || row <= 0)	continue;
 			if (column >= D || column <= 0)	continue;
@@ -532,8 +527,8 @@ void step(void)
 	}
 
 	else {
-		printf("Error: wrong mode.\n");
-		exit(0);
+		fprintf(stderr, "Error: wrong mode.\n");
+		exit(-1);
 	}
 }
 
