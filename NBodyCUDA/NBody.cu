@@ -7,17 +7,20 @@
 #include <time.h>
 #include <math.h>
 #include <omp.h>
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
 
 #include "NBody.h"
 #include "NBodyVisualiser.h"
 
 #define USER_NAME "acp18aaf"		//replace with your username
 #define EPSILON 0.000001
+#define THREADS_PER_BLOCK 128
 
 void print_help();
 void step(void);
 
-//define and initialize global variables
+//define and initialize host global variables
 int N = 0;
 int D = 0;
 MODE mode;
@@ -26,6 +29,54 @@ char *input_file = NULL;
 //nbody *nbodies = NULL;
 nbody_soa *nbodies = NULL;
 float *fx = NULL, *fy = NULL, *ax = NULL, *ay = NULL, *num = NULL;
+
+//define device pointers for CUDA mode 
+nbody_soa* d_nbodies = NULL;
+float *d_fx = NULL, *d_fy = NULL, *d_ax = NULL, *d_ay = NULL, *d_num = NULL;
+
+//cuda kernal to calculate accelerations for alll N bodies
+__global__ void calculate_acceleration(float* x, float* y, float *m, float *fx, float *fy, float *ax, float* ay, int n, float g, float softening_powed) {
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	int j;
+	float d_x, d_y, distance_ij_powed, denominator;
+	if (i < n){
+		for (j = 0; j < n; j++){
+			d_x = x[j] - x[i];
+			d_y = y[j] - x[i];
+			distance_ij_powed = d_x * d_x + d_y * d_y;
+			denominator = pow(distance_ij_powed + softening_powed, 1.5);
+			fx[i] += m[j] * d_x / denominator;
+			fy[i] += m[j] * d_y / denominator;
+		}
+
+		ax[i] = fx[i] * g;
+		ay[i] = fy[i] * g; 
+	}
+}
+
+//cuda kernal to calculate positions for alll N bodies
+__global__ void calculate_position(float *ax, float *ay, float *vx, float *vy, float *x, float *y, float t) {
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	if (i < n){
+		vx[i] = vx[i] + t * ax[i];
+		vy[i] = vy[i] + t * ay[i];
+
+		x[i] = x[i] + t * vx[i];
+		y[i] = y[i] + t * vy[i];
+	}
+}
+
+//cuda kernal to calculate activity map for alll N bodies
+__global__ void calculate_activity(float *x, float *y, float *num, int n, int d) {
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	int row, column;
+	if (i < n){
+		row = (int)floor((double)x[i] * d);
+		column = (int)floor((double)y[i] * d);
+ 
+		if (row >= 0 && row < d && column >= 0 && column < d)	num[column + row * d] += (float)(1.0*d / n);
+	}
+}
 
 int main(int argc, char *argv[]) {
 
@@ -117,19 +168,36 @@ int main(int argc, char *argv[]) {
 	//TODO: Allocate any heap memory
 
 	//nbodies = (struct nbody*)malloc(sizeof(struct nbody) * N);
-
+	int size = sizeof(float) * N;
 	nbodies = (struct nbody_soa*)malloc(sizeof(struct nbody_soa));
-	nbodies->x = (float*)malloc(sizeof(float) * N);
-	nbodies->y = (float*)malloc(sizeof(float) * N);
-	nbodies->vx = (float*)malloc(sizeof(float) * N);
-	nbodies->vy = (float*)malloc(sizeof(float) * N);
-	nbodies->m = (float*)malloc(sizeof(float) * N);
+	nbodies->x = (float*)malloc(size);
+	nbodies->y = (float*)malloc(size);
+	nbodies->vx = (float*)malloc(size);
+	nbodies->vy = (float*)malloc(size);
+	nbodies->m = (float*)malloc(size);
 
-	fx = (float*)malloc(sizeof(float) * N);
-	fy = (float*)malloc(sizeof(float) * N);
-	ax = (float*)malloc(sizeof(float) * N);
-	ay = (float*)malloc(sizeof(float) * N);
+	fx = (float*)malloc(size);
+	fy = (float*)malloc(size);
+	ax = (float*)malloc(size);
+	ay = (float*)malloc(size);
 	num = (float*)malloc(sizeof(float) * D * D);
+
+	//allocate GPU meomory for CUDA mode
+	if (mode == CUDA) {
+		cudaMalloc((void**) &d_nbodies, sizeof(struct nbody_soa));
+		cudaMalloc((void**) &(d_nbodies->x), size);
+		cudaMalloc((void**) &(d_nbodies->y), size);
+		cudaMalloc((void**) &(d_nbodies->vx), size);
+		cudaMalloc((void**) &(d_nbodies->vy), size);
+		cudaMalloc((void**) &(d_nbodies->m), size);
+
+		cudaMalloc((void**)&(d_fx), size);
+		cudaMalloc((void**)&(d_fy), size);
+		cudaMalloc((void**)&(d_ax), size);
+		cudaMalloc((void**)&(d_ay), size);
+		cudaMalloc((void**)&(d_num), sizeof(float) * D * D);
+	}
+
 	
 	//TODO: Depending on program arguments, either read initial data from file or generate random data.
 
@@ -271,13 +339,21 @@ int main(int argc, char *argv[]) {
 	}
 	// visualisation mode 
 	else {
-		initViewer(N, D, mode, step);
-		setNBodyPositions2f(nbodies->x, nbodies->y);
-		setActivityMapData(num);
-		startVisualisationLoop();
+		//input device pointers in CUDA mode for visulization 
+		if (mode == CUDA){
+			initViewer(N, D, mode, step);
+			setNBodyPositions2f(d_nbodies->x, d_nbodies->y);
+			setActivityMapData(d_num);
+			startVisualisationLoop();
+		} else {
+			initViewer(N, D, mode, step);
+			setNBodyPositions2f(nbodies->x, nbodies->y);
+			setActivityMapData(num);
+			startVisualisationLoop();
+		}
 	}
 
-	//free allocated memory
+	//free allocated host memory
 	free(nbodies->x);
 	free(nbodies->y);
 	free(nbodies->vx);
@@ -290,17 +366,32 @@ int main(int argc, char *argv[]) {
 	free(ay);
 	free(num);
 
+	//free allocated device memory for CUDA mode
+	if (mode == CUDA){
+		cudaFree(d_nbodies->x);
+		cudaFree(d_nbodies->y);
+		cudaFree(d_nbodies->vx);
+		cudaFree(d_nbodies->vy);
+		cudaFree(d_nbodies->m);
+		cudaFree(d_nbodies);
+		cudaFree(d_fx);
+		cudaFree(d_fy);
+		cudaFree(d_ax);
+		cudaFree(d_ay);
+		cudaFree(d_num);
+	}
+
 	return 0;
 }
 
 void step(void)
 {
 	//TODO: Perform the main simulation of the NBody system
-
+	int size = sizeof(float) * N;
 	//initialize fx, fy, num to be 0.0
-	memset(fx, 0, sizeof(float) * N);
-	memset(fy, 0, sizeof(float) * N);
-	memset(num, 0, sizeof(float) * D * D);
+	memset(fx, 0, size);
+	memset(fy, 0, size;
+	memset(num, 0, size;
 
 	//calculate this term firstly to avoid to calculate it redundantly
 	float softening_powed = (float) (pow(SOFTENING, 2));
@@ -380,13 +471,9 @@ void step(void)
 				fy[i] += (float)(((double)nbodies->m[j] * d_y) / pow((double)distance_ij_powed + softening_powed, 3 / 2));
 			}
 
-			//multiply G and mass for body i's Force
-			fx[i] *= G * nbodies->m[i];
-			fy[i] *= G * nbodies->m[i];
-
 			//calculate acceleration for body i
-			ax[i] = fx[i] / nbodies->m[i];
-			ay[i] = fy[i] / nbodies->m[i];
+			ax[i] = G * fx[i];
+			ay[i] = G * fy[i];
 		}
 		#pragma omp barrier
 
@@ -420,7 +507,27 @@ void step(void)
 	}
 	//CUDA mode
 	else if (mode == CUDA) {
-	
+		//copy memory from host to device
+		cudaMemcpy(d_nbodies, nbodies, sizeof(nbody_soa), cudaMemcpyHostToDevice);
+		cudaMemcpy(d_nbodies->x, nbodies->x, size, cudaMemcpyHostToDevice);
+		cudaMemcpy(d_nbodies->y, nbodies->y, size, cudaMemcpyHostToDevice);
+		cudaMemcpy(d_nbodies->vx, nbodies->vx, size, cudaMemcpyHostToDevice);
+		cudaMemcpy(d_nbodies->vy, nbodies->vy, size, cudaMemcpyHostToDevice);
+		cudaMemcpy(d_nbodies->m, nbodies->m, size, cudaMemcpyHostToDevice);
+		
+		int M = THREADS_PER_BLOCK;
+
+		//launch calculate_acceleration kernal in GPU
+		calculate_acceleration <<<(N + M -1)/M, M>>> (d_nbodies->x, d_nbodies->y, d_nbodies->m, d_fx, d_fy, d_ax, d_ay, N, G, softening_powed);
+		cudaDeviceSynchronize();
+
+		//launch calculate_position kernal in GPU
+		calculate_position <<<(N + M -1)/M, M>>> (d_ax, d_ay, d_nbodies->vx, d_nbodies->vy, d_nbodies->x, d_nbodies->y, dt);
+		cudaDeviceSynchronize();
+
+		//launch calculate_a kernal in GPU
+		calculate_activity <<<(N + M -1)/M, M>>> (d_nbodies->x, d_nbodies->y, d_num, N, D);
+		cudaDeviceSynchronize();
 	}
 
 	else {
