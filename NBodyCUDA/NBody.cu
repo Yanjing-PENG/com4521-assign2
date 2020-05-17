@@ -37,6 +37,25 @@ __global__ void calculate_acceleration(float* x, float* y, float* m, float* fx, 
 	}
 }
 
+__global__ void calculate_acceleration1(float* x, float* y, float* m, float *xi, float *yi, float* fxi, float* fyi, float* axi, float* ayi, int n, float g, float softening_powed) {
+	int j = blockIdx.x * blockDim.x + threadIdx.x;
+	float d_x, d_y, distance_ij_powed, denominator;
+
+	if (j < n) {
+		for (j = 0; j < n; j++) {
+			d_x = x[j] - *xi;
+			d_y = y[j] - *yi;
+			distance_ij_powed = d_x * d_x + d_y * d_y;
+			denominator = powf(distance_ij_powed + softening_powed, 1.5);
+			*fxi += m[j] * d_x / denominator;
+			*fyi += m[j] * d_y / denominator;
+		}
+
+		*axi = fxi * g;
+		*ayi = fyi * g;
+	}
+}
+
 //cuda kernal to calculate positions for all N bodies
 __global__ void calculate_position(float* ax, float* ay, float* vx, float* vy, float* x, float* y, float t, int n) {
 	int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -517,9 +536,12 @@ void step(void)
 		cudaMemset(d_num, 0, sizeof(float) * D * D);
 
 		//launch calculate_acceleration kernal in GPU
-		calculate_acceleration<<<(N + M -1)/M, M>>>(d_x, d_y, d_m, d_fx, d_fy, d_ax, d_ay, N, G, softening_powed);
-		cudaDeviceSynchronize();
-
+		//calculate_acceleration<<<(N + M -1)/M, M>>>(d_x, d_y, d_m, d_fx, d_fy, d_ax, d_ay, N, G, softening_powed);
+		for (int i = 0; i < N; i++) {
+			calculate_acceleration1<<<(N + M -1)/M, M>>>(d_x, d_y, d_m, d_x+i, d_y+i, d_fx+i, d_fy+i, d_ax+i, d_ay+i, N, G, softening_powed);
+			cudaDeviceSynchronize();
+		}
+		
 		//launch calculate_position kernal in GPU
 		calculate_position<<<(N + M -1)/M, M>>>(d_ax, d_ay, d_vx, d_vy, d_x, d_y, dt, N);
 		cudaDeviceSynchronize();
