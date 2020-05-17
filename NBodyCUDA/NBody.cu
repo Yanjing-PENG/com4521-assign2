@@ -116,8 +116,11 @@ int main(int argc, char *argv[]) {
 		else if (!strcmp(argv[3], "OPENMP")) {
 			mode = OPENMP;
 		}
+		else if (!strcmp(argv[3], "CUDA")) {
+			mode = CUDA;
+		}
 		else {
-			printf("Argument error: M should be CPU or OPENMP.\n\n");
+			printf("Argument error: M should be CPU or OPENMP or CUDA.\n\n");
 			print_help();
 			exit(0);
 		}
