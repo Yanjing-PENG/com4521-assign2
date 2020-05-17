@@ -545,9 +545,15 @@ void step(void)
 
 		//launch calculate_acceleration kernal in GPU
 		//calculate_acceleration<<<(N + M -1)/M, M>>>(d_x, d_y, d_m, d_fx, d_fy, d_ax, d_ay, N, G, softening_powed);
+		
 		for (int i = 0; i < N; i++) {
 			calculate_acceleration1<<<(N + M -1)/M, M>>>(d_x, d_y, d_m, d_x+i, d_y+i, d_fx+i, d_fy+i, d_ax+i, d_ay+i, N, G, softening_powed);
 			cudaDeviceSynchronize();
+		}
+
+		cudaMemcpy(ax, d_ax, sizeof(float) * N, cudaMemcpyDeviceToHost);
+		for (int i = 0; i < N; i++) {
+			printf("%f ", ax[i]);
 		}
 		
 		//launch calculate_position kernal in GPU
