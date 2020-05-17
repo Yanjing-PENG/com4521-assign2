@@ -42,17 +42,15 @@ __global__ void calculate_acceleration1(float* x, float* y, float* m, float *xi,
 	float d_x, d_y, distance_ij_powed, denominator;
 
 	if (j < n) {
-		for (j = 0; j < n; j++) {
-			d_x = x[j] - *xi;
-			d_y = y[j] - *yi;
-			distance_ij_powed = d_x * d_x + d_y * d_y;
-			denominator = powf(distance_ij_powed + softening_powed, 1.5);
-			*fxi += m[j] * d_x / denominator;
-			*fyi += m[j] * d_y / denominator;
-		}
+		d_x = x[j] - *xi;
+		d_y = y[j] - *yi;
+		distance_ij_powed = d_x * d_x + d_y * d_y;
+		denominator = powf(distance_ij_powed + softening_powed, 1.5);
+		*fxi += m[j] * d_x / denominator;
+		*fyi += m[j] * d_y / denominator;
 
-		*axi = fxi * g;
-		*ayi = fyi * g;
+		*axi = (*fxi) * g;
+		*ayi = (*fyi) * g;
 	}
 }
 
@@ -369,7 +367,17 @@ int main(int argc, char *argv[]) {
 			startVisualisationLoop();
 		}
 		else if (mode == CUDA) {
+			//copy memory from host to device
+			cudaMemcpy(d_x, nbodies->x, sizeof(float) * N, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_y, nbodies->y, sizeof(float) * N, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_vx, nbodies->vx, sizeof(float) * N, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_vy, nbodies->vy, sizeof(float) * N, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_m, nbodies->m, sizeof(float) * N, cudaMemcpyHostToDevice);
 
+			initViewer(N, D, mode, step);
+			setNBodyPositions2f(d_x, d_y);
+			setActivityMapData(d_num);
+			startVisualisationLoop();
 		}
 		else {
 			printf("Error: wrong mode.\n");
