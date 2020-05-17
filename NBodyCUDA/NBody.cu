@@ -61,7 +61,7 @@ __global__ void calculate_activity(float* x, float* y, int* position, int n, int
 			position[i] = column + row * d;
 		}
 		else {
-			position[i] = -1	//ignore bodies which is out of the Nbody space
+			position[i] = -1;	//ignore bodies which is out of the Nbody space
 		}
 	}
 }
@@ -525,7 +525,7 @@ void step(void)
 		cudaMemset(d_num, 0, sizeof(float) * D * D);
 
 		//launch calculate_acceleration kernal in GPU
-		//calculate_acceleration<<<(N + M -1)/M, M>>>(d_x, d_y, d_m, d_fx, d_fy, d_ax, d_ay, N, G, softening_powed);
+		calculate_acceleration<<<(N + M -1)/M, M>>>(d_x, d_y, d_m, d_fx, d_fy, d_ax, d_ay, N, G, softening_powed);
 		
 		//launch calculate_position kernal in GPU
 		calculate_position<<<(N + M -1)/M, M>>>(d_ax, d_ay, d_vx, d_vy, d_x, d_y, dt, N);
@@ -540,7 +540,7 @@ void step(void)
 		for (int i = 0; i < N; i++) {
 			if (pos[i] >= 0)	num[pos[i]] += 1.0 * D / N;
 		}
-		cudaMemcpy(d_num, num, sizeof(float) * D * D， cudaMemcpyHostToDevice);
+		cudaMemcpy(d_num, num, sizeof(float) * D * D, cudaMemcpyHostToDevice);
 	}
 	else {
 		printf("Error: wrong mode.\n");
